@@ -1,0 +1,13 @@
+# Core - vLLM handles its own dependencies (torch, transformers, pydantic, etc.)
+vllm==0.6.1
+
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+
+# Monitoring
+prometheus-client==0.21.0
+
+# Utilities
+python-json-logger==2.0.7
+nvidia-ml-py==12.535.133
