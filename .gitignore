@@ -36,3 +36,20 @@ docker-compose.override.yml
 # Temp
 tmp/
 *.tmp
+
+# Build artifacts
+*.tar
+*.tar.gz
+/tmp/
+
+# Runtime
+*.log
+*.pid
+
+# K3s
+*.kubeconfig
+
+# Python
+__pycache__/
+*.pyc
+.venv/
