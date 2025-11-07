@@ -1,0 +1,189 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-schema
+  namespace: transcript-pipeline
+data:
+  001-init.sql: |
+    -- PostgreSQL 16 Schema for AI Transcript Pipeline
+    -- Production deployment with vector similarity search
+    -- Optimized for 128GB RAM system with RAID10 storage
+
+    -- Enable required extensions
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pgvector";
+    CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+
+    -- Transcripts table: Core entity for audio/video transcript storage
+    CREATE TABLE transcripts (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        source TEXT NOT NULL,                          -- Original audio/video source identifier
+        raw_content TEXT NOT NULL,                     -- Full transcript text
+        summary TEXT,                                  -- AI-generated summary
+        filepath TEXT UNIQUE NOT NULL,                 -- Unique path to source file
+        conversation_id TEXT,                          -- Group related transcripts
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        processed_at TIMESTAMPTZ,                      -- Timestamp when AI processing completed
+        metadata JSONB DEFAULT '{}'::JSONB,            -- Flexible metadata storage
+        embedding VECTOR(1024),                        -- Vector embedding for semantic search
+        tag_confidence REAL CHECK (tag_confidence >= 0 AND tag_confidence <= 1),
+        embedding_model TEXT,                          -- Track which model generated embedding
+        classification_model TEXT,                     -- Track which model classified tags
+
+        -- Constraint: Processed transcripts must have both summary and embedding
+        CONSTRAINT processed_complete CHECK (
+            (processed_at IS NULL AND summary IS NULL AND embedding IS NULL) OR
+            (processed_at IS NOT NULL AND summary IS NOT NULL AND embedding IS NOT NULL)
+        )
+    );
+
+    -- Tags table: Hierarchical taxonomy for classification
+    CREATE TABLE tags (
+        id SERIAL PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        category TEXT NOT NULL,                        -- Top-level grouping (infra, study, backup, etc.)
+        parent_tag_id INTEGER REFERENCES tags(id) ON DELETE SET NULL,
+        obsidian_folder TEXT,                          -- Map to Obsidian vault folder structure
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    -- Junction table: Many-to-many relationship with confidence scores
+    CREATE TABLE transcript_tags (
+        transcript_id UUID REFERENCES transcripts(id) ON DELETE CASCADE,
+        tag_id INTEGER REFERENCES tags(id) ON DELETE CASCADE,
+        confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+        assigned_by TEXT NOT NULL,                     -- 'ai_model_name' or 'manual'
+        assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (transcript_id, tag_id)
+    );
+
+    -- Comments for documentation
+    COMMENT ON TABLE transcripts IS 'Core storage for AI-processed transcripts with vector embeddings';
+    COMMENT ON COLUMN transcripts.embedding IS 'Vector(1024) for semantic similarity search using pgvector';
+    COMMENT ON COLUMN transcripts.metadata IS 'JSONB field for flexible attributes: speaker count, duration, language, etc.';
+    COMMENT ON TABLE tags IS 'Hierarchical taxonomy supporting parent-child relationships';
+    COMMENT ON TABLE transcript_tags IS 'Junction table with AI confidence scores for multi-label classification';
+
+  002-indexes.sql: |
+    -- Production-grade indexes for AI Transcript Pipeline
+    -- Optimized for 128GB RAM system with vector similarity search
+
+    -- Vector similarity search using HNSW (Hierarchical Navigable Small World)
+    -- HNSW provides faster approximate nearest neighbor search than IVFFlat
+    -- Parameters: m=16 (connections per layer), ef_construction=64 (build quality)
+    CREATE INDEX IF NOT EXISTS idx_transcripts_embedding_hnsw
+    ON transcripts
+    USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+
+    -- Full-text search index using GIN (Generalized Inverted Index)
+    -- Enables fast text search across all transcript content
+    CREATE INDEX IF NOT EXISTS idx_transcripts_fts
+    ON transcripts
+    USING GIN (to_tsvector('english', raw_content));
+
+    -- JSONB metadata search using GIN
+    -- Supports efficient queries on metadata fields (e.g., metadata @> '{"language": "en"}')
+    CREATE INDEX IF NOT EXISTS idx_transcripts_metadata
+    ON transcripts
+    USING GIN (metadata);
+
+    -- Time-series optimization using BRIN (Block Range Index)
+    -- BRIN is highly efficient for sequential data like timestamps
+    -- Minimal storage overhead, excellent for time-based queries
+    CREATE INDEX IF NOT EXISTS idx_transcripts_created_at_brin
+    ON transcripts
+    USING BRIN (created_at)
+    WITH (pages_per_range = 128);
+
+    -- Standard B-tree indexes for common queries
+    CREATE INDEX IF NOT EXISTS idx_transcripts_conversation_id
+    ON transcripts (conversation_id)
+    WHERE conversation_id IS NOT NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_transcripts_processed_at
+    ON transcripts (processed_at)
+    WHERE processed_at IS NOT NULL;
+
+    -- Tags category lookup optimization
+    CREATE INDEX IF NOT EXISTS idx_tags_category_name
+    ON tags (category, name);
+
+    -- Tag hierarchy traversal
+    CREATE INDEX IF NOT EXISTS idx_tags_parent
+    ON tags (parent_tag_id)
+    WHERE parent_tag_id IS NOT NULL;
+
+    -- Junction table indexes for efficient joins
+    CREATE INDEX IF NOT EXISTS idx_transcript_tags_tag_id
+    ON transcript_tags (tag_id);
+
+    CREATE INDEX IF NOT EXISTS idx_transcript_tags_confidence
+    ON transcript_tags (confidence DESC)
+    WHERE confidence >= 0.7;
+
+    -- Composite index for filtering by tag and confidence
+    CREATE INDEX IF NOT EXISTS idx_transcript_tags_tag_confidence
+    ON transcript_tags (tag_id, confidence DESC);
+
+    -- Analyze tables for query planner optimization
+    ANALYZE transcripts;
+    ANALYZE tags;
+    ANALYZE transcript_tags;
+
+    -- Comments for documentation
+    COMMENT ON INDEX idx_transcripts_embedding_hnsw IS 'HNSW vector index for sub-millisecond semantic similarity search';
+    COMMENT ON INDEX idx_transcripts_fts IS 'Full-text search index using PostgreSQL tsvector';
+    COMMENT ON INDEX idx_transcripts_created_at_brin IS 'BRIN index optimized for time-series queries with minimal storage';
+
+  003-seed-tags.sql: |
+    -- Seed data: Initial taxonomy for transcript classification
+    -- Maps categories to Obsidian vault folder structure
+
+    -- Infrastructure parent tags
+    INSERT INTO tags (name, category, parent_tag_id, obsidian_folder)
+    VALUES
+        ('infrastructure', 'infra', NULL, 'infrastructure'),
+        ('study', 'study', NULL, 'study'),
+        ('backup', 'backup', NULL, 'backup'),
+        ('gpu', 'gpu', NULL, 'gpu'),
+        ('kubernetes', 'kubernetes', NULL, 'kubernetes');
+
+    -- Infrastructure subtags (parent: infrastructure)
+    INSERT INTO tags (name, category, parent_tag_id, obsidian_folder)
+    VALUES
+        ('hardware', 'infra', (SELECT id FROM tags WHERE name = 'infrastructure'), 'infrastructure/hardware'),
+        ('network', 'infra', (SELECT id FROM tags WHERE name = 'infrastructure'), 'infrastructure/network'),
+        ('storage', 'infra', (SELECT id FROM tags WHERE name = 'infrastructure'), 'infrastructure/storage');
+
+    -- Study/certification subtags (parent: study)
+    INSERT INTO tags (name, category, parent_tag_id, obsidian_folder)
+    VALUES
+        ('kcna', 'study', (SELECT id FROM tags WHERE name = 'study'), 'study/kcna'),
+        ('az104', 'study', (SELECT id FROM tags WHERE name = 'study'), 'study/az104');
+
+    -- Backup subtags (parent: backup)
+    INSERT INTO tags (name, category, parent_tag_id, obsidian_folder)
+    VALUES
+        ('architecture', 'backup', (SELECT id FROM tags WHERE name = 'backup'), 'backup/architecture');
+
+    -- GPU subtags (parent: gpu)
+    INSERT INTO tags (name, category, parent_tag_id, obsidian_folder)
+    VALUES
+        ('optimization', 'gpu', (SELECT id FROM tags WHERE name = 'gpu'), 'gpu/optimization');
+
+    -- Kubernetes subtags (parent: kubernetes)
+    INSERT INTO tags (name, category, parent_tag_id, obsidian_folder)
+    VALUES
+        ('troubleshooting', 'kubernetes', (SELECT id FROM tags WHERE name = 'kubernetes'), 'kubernetes/troubleshooting');
+
+    -- Verify insertion
+    SELECT
+        t1.id AS tag_id,
+        t1.name AS tag_name,
+        t1.category,
+        t2.name AS parent_name,
+        t1.obsidian_folder
+    FROM tags t1
+    LEFT JOIN tags t2 ON t1.parent_tag_id = t2.id
+    ORDER BY t1.category, t1.id;

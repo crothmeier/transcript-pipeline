@@ -1,0 +1,136 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: transcript-pipeline
+  labels:
+    app: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # Bind to Gen8 node with GPU (for future GPU-based services)
+      nodeSelector:
+        kubernetes.io/hostname: phx-ai01  # REPLACE with actual Gen8 node hostname
+
+      # Tolerate GPU node taints if any
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+
+      initContainers:
+      # Install pgvector extension before main container starts
+      - name: install-pgvector
+        image: postgres:16
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          echo "Installing pgvector extension..."
+          apt-get update
+          apt-get install -y postgresql-16-pgvector
+          echo "pgvector installation complete"
+        volumeMounts:
+        - name: pgvector-lib
+          mountPath: /usr/lib/postgresql/16/lib-shared
+
+      containers:
+      - name: postgres
+        image: postgres:16
+        ports:
+        - containerPort: 5432
+          name: postgres
+          protocol: TCP
+
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_USER
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_DB
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_PASSWORD
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+
+        # Custom entrypoint to load postgresql.conf from ConfigMap
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          # Copy custom config to data directory
+          mkdir -p /var/lib/postgresql/data/pgdata
+          cp /etc/postgresql/postgresql.conf /tmp/postgresql.conf
+
+          # Start PostgreSQL with custom config
+          docker-entrypoint.sh postgres -c config_file=/tmp/postgresql.conf
+
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        - name: config
+          mountPath: /etc/postgresql
+        - name: pgvector-lib
+          mountPath: /usr/lib/postgresql/16/lib-shared
+
+        resources:
+          requests:
+            memory: "20Gi"
+            cpu: "4"
+          limits:
+            memory: "40Gi"
+            cpu: "8"
+
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - $(POSTGRES_USER)
+            - -d
+            - $(POSTGRES_DB)
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - |
+              pg_isready -U $POSTGRES_USER -d $POSTGRES_DB && \
+              psql -U $POSTGRES_USER -d $POSTGRES_DB -c "SELECT 1" > /dev/null
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+      - name: config
+        configMap:
+          name: postgres-config
+      - name: pgvector-lib
+        emptyDir: {}

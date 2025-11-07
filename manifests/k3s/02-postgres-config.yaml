@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: transcript-pipeline
+data:
+  postgresql.conf: |
+    # PostgreSQL 16 Performance Tuning for 128GB RAM System
+    # Optimized for AI transcript pipeline with vector similarity search
+
+    # Memory Configuration
+    shared_buffers = 32GB                    # 25% of system RAM
+    effective_cache_size = 96GB              # 75% of system RAM
+    work_mem = 512MB                         # Per-operation memory
+    maintenance_work_mem = 2GB               # For VACUUM, CREATE INDEX
+
+    # Write-Ahead Logging (WAL)
+    wal_level = replica                      # Enable replication capability
+    max_wal_senders = 3                      # Support up to 3 standby servers
+    wal_keep_size = 1GB                      # Retain WAL for replication
+
+    # Checkpoints
+    checkpoint_completion_target = 0.9       # Spread checkpoint I/O
+    checkpoint_timeout = 15min               # Maximum time between checkpoints
+    max_wal_size = 4GB                       # Trigger checkpoint at this size
+    min_wal_size = 1GB                       # Minimum WAL retention
+
+    # Query Planner
+    random_page_cost = 1.1                   # SSD-optimized (RAID10)
+    effective_io_concurrency = 200           # RAID10 concurrent I/O capability
+
+    # Connections
+    max_connections = 100                    # Maximum concurrent connections
+
+    # Logging
+    log_destination = 'stderr'
+    logging_collector = on
+    log_directory = 'log'
+    log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
+    log_rotation_age = 1d
+    log_rotation_size = 100MB
+    log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
+    log_timezone = 'UTC'
+
+    # Performance Monitoring
+    shared_preload_libraries = 'pg_stat_statements'
+    pg_stat_statements.track = all
+
+    # Autovacuum (optimized for heavy write workloads)
+    autovacuum = on
+    autovacuum_max_workers = 4
+    autovacuum_naptime = 10s
+
+    # Locale and Formatting
+    datestyle = 'iso, mdy'
+    timezone = 'UTC'
+    lc_messages = 'en_US.utf8'
+    lc_monetary = 'en_US.utf8'
+    lc_numeric = 'en_US.utf8'
+    lc_time = 'en_US.utf8'
+    default_text_search_config = 'pg_catalog.english'

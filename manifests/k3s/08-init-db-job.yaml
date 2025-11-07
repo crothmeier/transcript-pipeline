@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-init
+  namespace: transcript-pipeline
+  labels:
+    app: postgres-init
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400  # Clean up after 24 hours
+  template:
+    metadata:
+      labels:
+        app: postgres-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: init-db
+        image: postgres:16
+        env:
+        - name: PGHOST
+          value: postgres.transcript-pipeline.svc.cluster.local
+        - name: PGPORT
+          value: "5432"
+        - name: PGUSER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_USER
+        - name: PGDATABASE
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_DB
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_PASSWORD
+
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          echo "Waiting for PostgreSQL to be ready..."
+          until pg_isready -h $PGHOST -p $PGPORT -U $PGUSER; do
+            echo "PostgreSQL is unavailable - sleeping"
+            sleep 2
+          done
+
+          echo "PostgreSQL is up - executing schema initialization"
+
+          # Execute schema files in order
+          echo "Executing 001-init.sql..."
+          psql -h $PGHOST -U $PGUSER -d $PGDATABASE -f /schema/001-init.sql
+
+          echo "Executing 002-indexes.sql..."
+          psql -h $PGHOST -U $PGUSER -d $PGDATABASE -f /schema/002-indexes.sql
+
+          echo "Executing 003-seed-tags.sql..."
+          psql -h $PGHOST -U $PGUSER -d $PGDATABASE -f /schema/003-seed-tags.sql
+
+          echo "Database initialization complete!"
+
+          # Verify extensions are installed
+          echo "Verifying extensions..."
+          psql -h $PGHOST -U $PGUSER -d $PGDATABASE -c '\dx'
+
+        volumeMounts:
+        - name: schema
+          mountPath: /schema
+
+      volumes:
+      - name: schema
+        configMap:
+          name: postgres-schema
