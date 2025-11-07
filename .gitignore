@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.Python
+venv/
+.pytest_cache/
+.coverage
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# Database
+pgdata/
+*.db
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Docker
+docker-compose.override.yml
+
+# Temp
+tmp/
+*.tmp
