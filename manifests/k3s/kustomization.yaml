@@ -20,3 +20,5 @@ resources:
   - 07-postgres-service.yaml
   - 06-postgres-statefulset.yaml
   # Note: 08-init-db-job.yaml is applied separately after StatefulSet is ready
+  - 09-embeddings-deployment.yaml
+  - 10-embeddings-service.yaml

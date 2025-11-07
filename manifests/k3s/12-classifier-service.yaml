@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: classifier
+  namespace: transcript-pipeline
+spec:
+  type: ClusterIP
+  selector:
+    app: classifier
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8081
+    protocol: TCP
